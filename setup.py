@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.6
+#!/usr/bin/env python3
 
 from setuptools import setup, find_packages
 
@@ -9,5 +9,5 @@ setup(
     author='Justin R. Cutler',
     author_email='justin.r.cutler@gmail.com',
     packages=find_packages(),
-    python_requires='3.6',
+    python_requires='3.5',
 )
