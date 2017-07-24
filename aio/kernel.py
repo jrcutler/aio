@@ -2,7 +2,7 @@ from collections import deque
 from selectors import DefaultSelector
 
 from .priorityqueue import PriorityQueue
-from .traps import Suspend, Trap
+from .traps import Suspend, IO, Trap
 from .util import time
 
 __all__ = (
@@ -29,7 +29,7 @@ class EventLoop:
             raise RuntimeError('cannot close while running')
         if self.is_closed():
             return
-        # TODO: handle close actions
+        self._selector.close()
         self._closed = True
     def stop(self):
         self._stopping = True
@@ -42,15 +42,20 @@ class EventLoop:
             raise RuntimeError('already running')
         self._running = True
         try:
-            while not self._stopping and (self._ready or self._scheduled):
+            while not self._stopping and (self._ready or self._scheduled or
+                                          self._selector._map):
                 self._run_once()
         finally:
             self._running = False
             self._stopping = False
-    def _add_ready(self, task, value=None, *, exc=None):
-        self._ready.append((task, value, exc))
+    def _add_ready(self, task, value=None, *, exc=None, last_io=None):
+        self._ready.append((task, value, exc, last_io))
     def _add_scheduled(self, task, when):
         self._scheduled.push(when, task)
+    def _add_io(self, task, trap):
+        self._selector.register(trap.fileobj, trap.events, (task, trap))
+    def _remove_io(self, trap):
+        self._selector.unregister(trap.fileobj)
     def _run_once(self):
         # determine timeout
         if self._ready:
@@ -60,13 +65,13 @@ class EventLoop:
             now = time()
             timeout = max(0, when - now)
         else:
+            # waiting for I/O only
             timeout = None
-            # TODO: implement I/O waits
-            raise NotImplementedError
         # wait for timeout or I/O readiness events
-        for key, event in self._selector.select(timeout):
-            # TODO: move I/O handlers to ready
-            raise NotImplementedError
+        for key, mask in self._selector.select(timeout):
+            # move I/O handlers to ready
+            task, last_io = key.data
+            self._add_ready(task, mask, last_io=last_io)
         # move expired scheduled tasks to ready
         wakeup = time()
         while self._scheduled and self._scheduled.peek() <= now:
@@ -75,7 +80,8 @@ class EventLoop:
         # handle all tasks that are ready now
         nready = len(self._ready)
         for _ in range(nready):
-            task, value, exc = self._ready.popleft()
+            task, value, exc, last_io = self._ready.popleft()
+            unregister = last_io is not None
             try:
                 if exc is None:
                     trap = task.send(value)
@@ -84,6 +90,11 @@ class EventLoop:
                 if isinstance(trap, Trap):
                     if isinstance(trap, Suspend):
                         self._add_scheduled(task, trap.until)
+                    elif isinstance(trap, IO):
+                        if last_io is not None and last_io != trap:
+                            unregister = False
+                        else:
+                            self._add_io(task, trap)
                     else:
                         raise TypeError('{!r} awaited unknown Trap: {!r}'
                             .format(task, trap))
@@ -98,3 +109,5 @@ class EventLoop:
                 # TODO: handle exceptions
                 import traceback
                 traceback.print_exc()
+            if unregister:
+                self._remove_io(last_io)
