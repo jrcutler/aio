@@ -3,6 +3,7 @@ from selectors import EVENT_READ, EVENT_WRITE
 __all__ = (
     'Trap',
     'Suspend',
+    'IO',
 )
 
 
